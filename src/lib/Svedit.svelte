@@ -49,7 +49,9 @@
 		path,
 		class: css_class,
 		autocapitalize = 'on',
-		spellcheck = 'true'
+		spellcheck = 'true',
+		canvas_tabindex = -1,
+		canvas_label
 	}: SveditProps<S> = $props();
 
 	let canvas_el: HTMLElement | undefined;
@@ -1778,6 +1780,7 @@ ${fallback_html}`;
 		imperative state tracking, drag detection, or click/pointerdown
 		handlers are required for keyboard suppression.
 	-->
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex (tabindex 0 comes with the textbox role; read-only canvases stay at -1) -->
 	<div
 		class="svedit-canvas {css_class}"
 		class:hide-selection={editable && session.selection?.type === 'node'}
@@ -1794,7 +1797,10 @@ ${fallback_html}`;
 		onblur={handle_canvas_blur}
 		inputmode={session.selection?.type === 'text' ? 'text' : 'none'}
 		contenteditable={editable ? 'true' : 'false'}
-		tabindex="-1"
+		tabindex={editable ? canvas_tabindex : -1}
+		role={editable && canvas_tabindex === 0 ? 'textbox' : undefined}
+		aria-multiline={editable && canvas_tabindex === 0 ? true : undefined}
+		aria-label={canvas_label}
 		{autocapitalize}
 		{spellcheck}
 		{...{
@@ -1819,7 +1825,7 @@ ${fallback_html}`;
 		Prevents silent failures when developers forget to set the row property in their top level node component.
 		TODO: Warn developers in dev mode via console if they forget to set the --row property and use a different flow.*/
 		--row: 0;
-		&:focus {
+		&[tabindex='-1']:focus {
 			outline: none;
 		}
 	}

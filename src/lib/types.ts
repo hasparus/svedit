@@ -517,6 +517,14 @@ export type SveditProps<S extends DocumentSchema = DocumentSchema> = {
 	autocapitalize?: 'on' | 'off';
 	/** The `spellcheck` attribute on the canvas element */
 	spellcheck?: 'true' | 'false';
+	/**
+	 * Opt an editable canvas into sequential keyboard navigation. With `0`,
+	 * the canvas is a tab stop exposed as a multiline textbox and keeps the
+	 * browser's focus outline. Read-only canvases are never tab stops.
+	 */
+	canvas_tabindex?: -1 | 0;
+	/** Accessible name for the canvas, e.g. for a keyboard-reachable canvas */
+	canvas_label?: string;
 };
 
 /**
