@@ -46,21 +46,24 @@
 	});
 </script>
 
-<svelte:element
-	this={tag}
-	id={node.id}
-	class="node-{node.type} {css_class}{range_classes ? ` ${range_classes}` : ''}{is_first
-		? ' first'
-		: ''}{is_last ? ' last' : ''}"
-	data-node-id={node.id}
-	data-path={path_str}
-	data-type="node"
-	style="anchor-name: --{path_str};{style}"
-	{...rest}
-	{@attach svedit.visibility_registry.track_node(path_str)}
->
-	{@render children()}
-</svelte:element>
+<!-- A path can resolve to no node while remote changes are merged; render nothing then -->
+{#if node}
+	<svelte:element
+		this={tag}
+		id={node.id}
+		class="node-{node.type} {css_class}{range_classes ? ` ${range_classes}` : ''}{is_first
+			? ' first'
+			: ''}{is_last ? ' last' : ''}"
+		data-node-id={node.id}
+		data-path={path_str}
+		data-type="node"
+		style="anchor-name: --{path_str};{style}"
+		{...rest}
+		{@attach svedit.visibility_registry.track_node(path_str)}
+	>
+		{@render children()}
+	</svelte:element>
+{/if}
 
 <style>
 	[data-type='node'] {

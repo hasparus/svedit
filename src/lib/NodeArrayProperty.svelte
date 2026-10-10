@@ -169,8 +169,10 @@
 			{@const mark = get_mark(index)}
 			{@const annotations = get_annotation_contexts(index)}
 			<NodeGap array_path={path} offset={index} count={node_ids.length} />
-			{@const Component = svedit.session.config.node_components[node.type]}
-			{#if Component}
+			{@const Component = svedit.session.config.node_components[node?.type]}
+			{#if !node}
+				<!-- A dangling reference (e.g. mid-merge of remote changes) renders nothing -->
+			{:else if Component}
 				<Component path={[...path, index]} {mark} {annotations} />
 			{:else}
 				<UnknownNode path={[...path, index]} />
@@ -182,7 +184,7 @@
 		{#if fragment.type === 'nodes'}
 			{@render render_nodes(fragment.nodes, fragment.start_index)}
 		{:else if fragment.type === 'mark'}
-			{@const MarkComponent = svedit.session.config.node_components[fragment.node.type]}
+			{@const MarkComponent = svedit.session.config.node_components[fragment.node?.type]}
 			{#if MarkComponent}
 				<MarkComponent path={[...path, 'marks', fragment.mark_index, 'node_id']}>
 					{@render render_nodes(fragment.nodes, fragment.start_index)}
