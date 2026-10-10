@@ -340,13 +340,36 @@ function mirror_attachments(
 	}
 }
 
+/** Add Automerge marks for every mark and annotation of a freshly assigned text value. */
+function mark_text_value(d: unknown, path: AutomergePath, value: Text, mark_fn: MarkFn) {
+	for (const [prefix, attachments] of [
+		[MARK_PREFIX, value.marks],
+		[ANNOTATION_PREFIX, value.annotations]
+	] as const) {
+		for (const a of attachments) {
+			const start = char_to_utf16_offset(value.content, a.start_offset);
+			const end = char_to_utf16_offset(value.content, a.end_offset);
+			mark_fn(d, path, { start, end, expand: 'none' }, prefix + a.node_id, a.node_id);
+		}
+	}
+}
+
+function mark_text_properties(d: AutomergeDoc, node: DocumentNode, mark_fn: MarkFn | null) {
+	if (!mark_fn) return;
+	for (const [property, value] of Object.entries(node)) {
+		if (is_text_value(value)) {
+			mark_text_value(d, ['nodes', node.id, property, 'content'], value, mark_fn);
+		}
+	}
+}
+
 /**
  * Apply Svedit ops to a bound Automerge draft:
  *   ['set', [node_id, property], value] assigns the value; `undefined`
  *     deletes the property (Automerge rejects undefined). A text value
  *     splices `content` and mirrors marks and annotations to Automerge marks,
  *     so concurrent edits merge.
- *   ['create', node] adds the node.
+ *   ['create', node] adds the node, with Automerge marks for its text.
  *   ['delete', node_id] removes the node.
  * Unknown op types are ignored.
  */
@@ -401,10 +424,14 @@ export function mirror_ops_to_doc(
 				}
 			} else {
 				nodes[node_id][property] = structuredClone(new_value);
+				if (mark_fn && is_text_value(new_value)) {
+					mark_text_value(d, ['nodes', node_id, property, 'content'], new_value, mark_fn);
+				}
 			}
 		} else if (type === 'create') {
 			const node = structuredClone(args[0]) as DocumentNode;
 			nodes[node.id] = node;
+			mark_text_properties(d, node, mark_fn);
 		} else if (type === 'delete') {
 			delete nodes[args[0] as string];
 		}

@@ -277,3 +277,34 @@ describe('selection cursors', () => {
 		});
 	});
 });
+
+describe('mirroring created text', () => {
+	it('marks the attachments of created nodes so remote splices shift them', () => {
+		const { session, remote } = create_bound_session();
+		session.schema.paragraph.properties.content.mark_types = ['strong'];
+		const tr = session.tr;
+		tr.create({ id: 'strong_1', type: 'strong' });
+		tr.create({
+			id: 'paragraph_1',
+			type: 'paragraph',
+			content: {
+				content: 'bold text',
+				marks: [{ node_id: 'strong_1', start_offset: 5, end_offset: 9 }],
+				annotations: []
+			}
+		});
+		tr.set(['page_1', 'body'], {
+			...session.get(['page_1', 'body']),
+			nodes: ['paragraph_1', ...session.get(['page_1', 'body']).nodes]
+		});
+		session.apply(tr);
+		const content_path = ['nodes', 'paragraph_1', 'content', 'content'];
+		expect(remote.doc._marks[key_of(content_path)]).toEqual([
+			{ name: `${MARK_PREFIX}strong_1`, value: 'strong_1', start: 5, end: 9 }
+		]);
+		remote.handle.change((d) => fake_fns.splice!(d, content_path, 0, 0, 'so '));
+		expect(session.get(['paragraph_1', 'content']).marks).toEqual([
+			{ node_id: 'strong_1', start_offset: 8, end_offset: 12 }
+		]);
+	});
+});

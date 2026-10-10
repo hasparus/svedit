@@ -76,7 +76,6 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 	#automerge_handle: AutomergeHandle | null = null;
 	#automerge_fns: AutomergeTextFns = {};
 	#automerge_change_listener: ((payload: AutomergeChangePayload) => void) | null = null;
-	#applying_remote = false;
 	#mirroring_locally = false;
 
 	// Reactive helpers for UI state
@@ -706,7 +705,7 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 
 	#mirror_if_bound(ops: Transaction['ops']): void {
 		const handle = this.#automerge_handle;
-		if (!handle || this.#applying_remote || ops.length === 0) return;
+		if (!handle || ops.length === 0) return;
 		const { splice, mark, unmark } = this.#automerge_fns;
 		// The handle emits `change` synchronously for our own write; the flag
 		// keeps that echo from being reconciled back into the session.
@@ -740,12 +739,7 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 		}
 		if (!reconciled.changed) return;
 		const selection_before = this.selection;
-		this.#applying_remote = true;
-		try {
-			this.doc = { ...this.doc, nodes: reconciled.nodes };
-		} finally {
-			this.#applying_remote = false;
-		}
+		this.doc = { ...this.doc, nodes: reconciled.nodes };
 		this.#remap_selection(selection_before, payload);
 	}
 
