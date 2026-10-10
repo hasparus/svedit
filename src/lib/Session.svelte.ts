@@ -37,6 +37,13 @@ import type {
 	SveditContext
 } from './types.js';
 import type { Keymap } from './KeyMapper.svelte.js';
+import { mirror_ops_to_doc, reconcile_remote_nodes } from './session_automerge.js';
+import type {
+	AutomergeChangePayload,
+	AutomergeHandle,
+	AutomergeTextFns
+} from './session_automerge.js';
+import { encode_selection, decode_selection } from './presence_cursors.js';
 
 const BATCH_WINDOW_MS = 1000; // 1 second
 
@@ -64,6 +71,13 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 	// NOTE: Assumes single Svedit instance per session
 	commands: CommandRegistry = $state.raw({});
 	keymap: Keymap = $state.raw({});
+
+	// Automerge binding (see attach_automerge_handle)
+	#automerge_handle: AutomergeHandle | null = null;
+	#automerge_fns: AutomergeTextFns = {};
+	#automerge_change_listener: ((payload: AutomergeChangePayload) => void) | null = null;
+	#applying_remote = false;
+	#mirroring_locally = false;
 
 	// Reactive helpers for UI state
 	can_undo = $derived(this.history_index >= 0);
@@ -269,6 +283,7 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 		// derived in the component tree.
 		if (transaction.ops.length > 0) {
 			this.doc = transaction.doc;
+			this.#mirror_if_bound(transaction.ops);
 		}
 		// Make sure selection gets a new reference (is rerendered)
 		this.selection = structuredClone(transaction.selection);
@@ -328,6 +343,7 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 				apply_op_to_draft(doc, op);
 			});
 		this.doc = doc;
+		this.#mirror_if_bound(change.inverse_ops.slice().reverse());
 		this.selection = change.selection_before;
 		this.history_index = this.history_index - 1;
 		// History navigation ends any open typing batch, so the next batched
@@ -347,6 +363,7 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 			apply_op_to_draft(doc, op);
 		});
 		this.doc = doc;
+		this.#mirror_if_bound(change.ops);
 		this.selection = change.selection_after;
 		// Redo ends any open typing batch, matching undo().
 		this.last_batch_started = undefined;
@@ -657,5 +674,103 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 	get_referenced_nodes(node_id: NodeId): NodeId[] {
 		// Id-only traversal — no need to deep-clone the subgraph for ids.
 		return traverse_ids(node_id, this.schema, this.doc.nodes).slice(0, -1);
+	}
+
+	/**
+	 * Bind this session to an Automerge document handle. Local transactions,
+	 * undo and redo are mirrored into the doc; remote changes are reconciled
+	 * into `doc`, keeping unchanged nodes (and the caret in them) intact.
+	 *
+	 * The Automerge doc holds the same `nodes` map as `doc`. Pass Automerge's
+	 * `splice`, `mark`, `unmark` and `marks` to merge concurrent text edits
+	 * per character, and `getCursor` / `getCursorPosition` to keep the local
+	 * caret on its character across remote edits.
+	 */
+	attach_automerge_handle(handle: AutomergeHandle, fns: AutomergeTextFns = {}): void {
+		this.detach_automerge_handle();
+		this.#automerge_handle = handle;
+		this.#automerge_fns = fns;
+		const listener = (payload: AutomergeChangePayload) => this.#on_automerge_change(payload);
+		this.#automerge_change_listener = listener;
+		handle.on('change', listener);
+	}
+
+	detach_automerge_handle(): void {
+		if (this.#automerge_handle && this.#automerge_change_listener) {
+			this.#automerge_handle.off('change', this.#automerge_change_listener);
+		}
+		this.#automerge_handle = null;
+		this.#automerge_fns = {};
+		this.#automerge_change_listener = null;
+	}
+
+	#mirror_if_bound(ops: Transaction['ops']): void {
+		const handle = this.#automerge_handle;
+		if (!handle || this.#applying_remote || ops.length === 0) return;
+		const { splice, mark, unmark } = this.#automerge_fns;
+		// The handle emits `change` synchronously for our own write; the flag
+		// keeps that echo from being reconciled back into the session.
+		this.#mirroring_locally = true;
+		try {
+			handle.change((d) =>
+				mirror_ops_to_doc(d, ops, {
+					splice: splice ?? null,
+					mark: mark ?? null,
+					unmark: unmark ?? null
+				})
+			);
+		} finally {
+			this.#mirroring_locally = false;
+		}
+	}
+
+	#on_automerge_change(payload: AutomergeChangePayload): void {
+		if (this.#mirroring_locally) return;
+		const next = this.#automerge_handle?.doc();
+		if (!next?.nodes) return;
+		let reconciled: ReturnType<typeof reconcile_remote_nodes>;
+		try {
+			reconciled = reconcile_remote_nodes(
+				this.doc?.nodes ?? {},
+				next,
+				this.#automerge_fns.marks ?? null
+			);
+		} catch {
+			reconciled = { nodes: structuredClone(next.nodes), changed: true };
+		}
+		if (!reconciled.changed) return;
+		const selection_before = this.selection;
+		this.#applying_remote = true;
+		try {
+			this.doc = { ...this.doc, nodes: reconciled.nodes };
+		} finally {
+			this.#applying_remote = false;
+		}
+		this.#remap_selection(selection_before, payload);
+	}
+
+	/**
+	 * Keep the local selection on its characters (or node boundaries) across a
+	 * remote change, using Automerge cursors against the docs before and after
+	 * the change. A selection the new doc no longer supports is cleared.
+	 */
+	#remap_selection(selection: Selection | null, payload: AutomergeChangePayload): void {
+		if (!selection) return;
+		const { getCursor, getCursorPosition } = this.#automerge_fns;
+		const before = payload?.patchInfo?.before;
+		const after = payload?.patchInfo?.after;
+		let next_selection = selection;
+		if (getCursor && getCursorPosition && before && after) {
+			const api = { getCursor, getCursorPosition };
+			const remapped = decode_selection(api, after, encode_selection(api, before, selection));
+			if (remapped && JSON.stringify(remapped) !== JSON.stringify(selection)) {
+				next_selection = remapped;
+			}
+		}
+		try {
+			this.selection = next_selection;
+		} catch {
+			this.#selection = null;
+		}
 	}
 }

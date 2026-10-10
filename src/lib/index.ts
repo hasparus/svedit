@@ -99,3 +99,27 @@ export type {
 export { export_text_html } from './html_export.js';
 export type { MarkHtmlExporter } from './html_export.js';
 export { escape_html, safe_html_href } from './html_utils.js';
+
+// Automerge binding and selection cursors
+export {
+	apply_text_splice,
+	mirror_ops_to_doc,
+	reconcile_remote_nodes,
+	MARK_PREFIX,
+	ANNOTATION_PREFIX
+} from './session_automerge.js';
+export type {
+	AutomergeChangePayload,
+	AutomergeDoc,
+	AutomergeHandle,
+	AutomergeMark,
+	AutomergeTextFns,
+	SpliceFn,
+	MarkFn,
+	UnmarkFn,
+	MarksFn,
+	GetCursorFn,
+	GetCursorPositionFn
+} from './session_automerge.js';
+export { encode_selection, decode_selection } from './presence_cursors.js';
+export type { CursorApi, WireSelection } from './presence_cursors.js';
