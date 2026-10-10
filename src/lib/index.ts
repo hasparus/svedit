@@ -123,3 +123,5 @@ export type {
 } from './session_automerge.js';
 export { encode_selection, decode_selection } from './presence_cursors.js';
 export type { CursorApi, WireSelection } from './presence_cursors.js';
+export { caret_rect_for_selection, selection_highlight_rects } from './presence_geometry.js';
+export type { CaretRect, HighlightRect } from './presence_geometry.js';
