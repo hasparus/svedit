@@ -742,39 +742,95 @@ ${fallback_html}`;
 		return !!payload && try_node_paste(payload, caret);
 	}
 
+	/**
+	 * Media files as passed to `handle_media_paste`.
+	 */
+	function collect_media(files: Array<File | null>) {
+		return files
+			.filter(
+				(file) =>
+					file &&
+					(file.type.startsWith('image/') ||
+						file.type.startsWith('video/') ||
+						file.type.startsWith('audio/'))
+			)
+			.map((blob) => ({
+				blob,
+				data_url: URL.createObjectURL(blob),
+				type: blob.type,
+				size: blob.size
+			}));
+	}
+
+	function get_media_paste_handler() {
+		return session.config.handle_media_paste || session.config.handle_image_paste;
+	}
+
+	function ondragover(event: DragEvent) {
+		if (!editable || !get_media_paste_handler()) return;
+		if (!event.dataTransfer?.types.includes('Files')) return;
+		event.preventDefault();
+		event.dataTransfer.dropEffect = 'copy';
+	}
+
+	/**
+	 * A node selection around the node element containing `target`, if that
+	 * node sits in a node array of this canvas.
+	 */
+	function get_drop_selection(target: EventTarget | null): NodeSelection | null {
+		const node_el = (target as Element | null)?.closest?.('[data-type="node"][data-path]');
+		if (!(node_el instanceof HTMLElement) || !canvas_el?.contains(node_el)) return null;
+		const node_path = deserialize_path(node_el.dataset.path);
+		const index = node_path.at(-1);
+		if (typeof index !== 'number') return null;
+		return {
+			type: 'node',
+			path: node_path.slice(0, -1),
+			anchor_offset: index,
+			focus_offset: index + 1
+		};
+	}
+
+	function get_node_selection(): NodeSelection | null {
+		return session.selection?.type === 'node' ? session.selection : null;
+	}
+
+	/**
+	 * Dropped media goes through `handle_media_paste` like pasted media. The
+	 * target is the node under the pointer (selected, so the handler can
+	 * replace it), else the current node selection.
+	 */
+	async function ondrop(event: DragEvent) {
+		if (!editable) return;
+		const handle_media_paste = get_media_paste_handler();
+		if (!handle_media_paste) return;
+		const media = collect_media(Array.from(event.dataTransfer?.files ?? []));
+		if (media.length === 0) return;
+		const drop_selection = get_drop_selection(event.target) ?? get_node_selection();
+		if (!drop_selection) return;
+		event.preventDefault();
+		session.selection = drop_selection;
+		const dropped_json = await handle_media_paste(session, media);
+		if (dropped_json?.main_nodes?.length) {
+			try_node_paste(dropped_json, drop_selection);
+		}
+	}
+
 	async function onpaste(event: ClipboardEvent) {
 		// Only handle paste events if editable and focus is within the canvas
 		if (!editable) return;
 		if (!canvas_el?.contains(document.activeElement)) return;
 		event.preventDefault();
 
-		let html_content,
-			plain_text,
-			pasted_json,
-			pasted_media = [];
+		let html_content, plain_text, pasted_json;
 
 		// NOTE: For some reason, await navigator.clipboard.read()
-		const clipboard_items = event.clipboardData?.items || [];
-		for (const item of clipboard_items || []) {
-			if (
-				item.type.startsWith('image/') ||
-				item.type.startsWith('video/') ||
-				item.type.startsWith('audio/')
-			) {
-				const blob = item.getAsFile();
-				const data_url = URL.createObjectURL(blob);
-				pasted_media.push({
-					blob,
-					data_url,
-					type: item.type,
-					size: blob.size
-				});
-			}
-		}
+		const pasted_media = collect_media(
+			Array.from(event.clipboardData?.items ?? [], (item) => item.getAsFile())
+		);
 
 		if (pasted_media.length > 0) {
-			const handle_media_paste =
-				session.config.handle_media_paste || session.config.handle_image_paste;
+			const handle_media_paste = get_media_paste_handler();
 			pasted_json = await handle_media_paste(session, pasted_media);
 			// NOTE: If no pasted_json is returned from the custom handler, we assume that content creation has been
 			// handled inside handle_media_paste already.
@@ -1730,6 +1786,8 @@ ${fallback_html}`;
 		class:property-selection={session.selection?.type === 'property'}
 		bind:this={canvas_el}
 		{onbeforeinput}
+		{ondragover}
+		{ondrop}
 		{oncompositionstart}
 		{oncompositionend}
 		onfocus={handle_canvas_focus}

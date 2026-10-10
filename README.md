@@ -573,7 +573,7 @@ because import factories cannot be reliably reversed.
 Two optional hooks are especially useful when integrating custom media workflows:
 
 - `handle_media_paste(session, pasted_media)`  
-  Called when media is pasted. You can upload/process files, replace an existing media property, or return a node payload to insert new content.  
+  Called when media is pasted or dropped onto the canvas. A drop first selects the node under the pointer (or keeps the current node selection). You can upload/process files, replace an existing media property, or return a node payload to insert new content.  
   See example implementation in [`src/routes/demo_config.ts`](src/routes/demo_config.ts).
 
 - `handle_property_deletion(session, path)`  
