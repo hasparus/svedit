@@ -109,6 +109,7 @@ export {
 	node_payload_equal,
 	normalize_attachments,
 	partition_ops,
+	rank_by_payload,
 	reconcile_remote_nodes,
 	MARK_PREFIX,
 	ANNOTATION_PREFIX
@@ -125,7 +126,8 @@ export type {
 	MarksFn,
 	GetCursorFn,
 	GetCursorPositionFn,
-	LocalOnlyFn
+	LocalOnlyFn,
+	NormalizeOptions
 } from './session_automerge.js';
 export { encode_selection, decode_selection } from './presence_cursors.js';
 export type { CursorApi, WireSelection } from './presence_cursors.js';

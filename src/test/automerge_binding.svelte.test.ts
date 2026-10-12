@@ -5,6 +5,7 @@ import {
 	MARK_PREFIX,
 	apply_text_splice,
 	normalize_attachments,
+	rank_by_payload,
 	reconcile_remote_nodes
 } from '../lib/session_automerge.js';
 import type {
@@ -224,7 +225,7 @@ describe('reconcile_remote_nodes', () => {
 });
 
 describe('normalize_attachments', () => {
-	it('drops overlapping marks and clamps to the content', () => {
+	it('trims overlapping marks and clamps to the content', () => {
 		const marks = [
 			{ node_id: 'a', start_offset: 0, end_offset: 4 },
 			{ node_id: 'b', start_offset: 2, end_offset: 6 },
@@ -232,9 +233,36 @@ describe('normalize_attachments', () => {
 		];
 		expect(normalize_attachments(marks, 'abcdefgh', true)).toEqual([
 			{ node_id: 'a', start_offset: 0, end_offset: 4 },
+			{ node_id: 'b', start_offset: 4, end_offset: 6 },
 			{ node_id: 'c', start_offset: 6, end_offset: 8 }
 		]);
 		expect(normalize_attachments(marks, 'abcdefgh', false)).toHaveLength(3);
+	});
+
+	it('lets marks that carry data win the overlap and reports every change', () => {
+		const nodes: Record<string, any> = {
+			bold: { id: 'bold', type: 'strong' },
+			link: { id: 'link', type: 'link', href: '/x' },
+			inner: { id: 'inner', type: 'emphasis' }
+		};
+		const changes: unknown[] = [];
+		const options = {
+			rank: rank_by_payload((id) => nodes[id]),
+			on_change: (before: unknown, after: unknown) => changes.push([before, after])
+		};
+		const marks = [
+			{ node_id: 'bold', start_offset: 0, end_offset: 7 },
+			{ node_id: 'link', start_offset: 6, end_offset: 11 },
+			{ node_id: 'inner', start_offset: 7, end_offset: 9 }
+		];
+		expect(normalize_attachments(marks, 'hello world', true, options)).toEqual([
+			{ node_id: 'bold', start_offset: 0, end_offset: 6 },
+			{ node_id: 'link', start_offset: 6, end_offset: 11 }
+		]);
+		expect(changes).toEqual([
+			[marks[0], { node_id: 'bold', start_offset: 0, end_offset: 6 }],
+			[marks[2], null]
+		]);
 	});
 });
 

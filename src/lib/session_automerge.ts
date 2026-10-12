@@ -254,36 +254,100 @@ export function merge_attachments(
 	);
 }
 
+export type NormalizeOptions = {
+	/**
+	 * For exclusive attachments: which of two overlapping ones keeps the
+	 * overlap (higher wins). Defaults to the earlier one.
+	 */
+	rank?: (attachment: Attachment) => number;
+	/** Called for every attachment that was dropped (`after` null) or trimmed. */
+	on_change?: (before: Attachment, after: Attachment | null) => void;
+};
+
 /**
- * Clamp attachments to the content length, drop empty ones, and (for marks)
- * drop any that overlap an earlier one. Marks must be mutually exclusive, but
- * two peers can concurrently mark overlapping ranges.
+ * Rank attachments whose payload node carries data (e.g. a link's href)
+ * above plain formatting (e.g. strong), so formatting never costs a link.
+ */
+export function rank_by_payload(
+	get_node: (id: string) => DocumentNode | undefined
+): (attachment: Attachment) => number {
+	return (attachment) => {
+		const node = get_node(attachment.node_id);
+		return node && Object.keys(node).some((key) => key !== 'id' && key !== 'type') ? 1 : 0;
+	};
+}
+
+/** The parts of [start, end) not covered by `taken`, longest first. */
+function free_segments(start: number, end: number, taken: Attachment[]): Array<[number, number]> {
+	let segments: Array<[number, number]> = [[start, end]];
+	for (const t of taken) {
+		segments = segments.flatMap(([s, e]): Array<[number, number]> => {
+			if (t.end_offset <= s || t.start_offset >= e) return [[s, e]];
+			const parts: Array<[number, number]> = [];
+			if (t.start_offset > s) parts.push([s, t.start_offset]);
+			if (t.end_offset < e) parts.push([t.end_offset, e]);
+			return parts;
+		});
+	}
+	return segments.sort((a, b) => b[1] - b[0] - (a[1] - a[0]) || a[0] - b[0]);
+}
+
+/**
+ * Clamp attachments to the content length and drop empty ones. For marks
+ * (`exclusive`), resolve overlaps, which concurrent edits can produce: the
+ * higher-ranked mark keeps the overlap and the other one is trimmed to its
+ * longest remaining part (an attachment node may be referenced only once,
+ * so it can't be split), or dropped if nothing remains.
  */
 export function normalize_attachments(
 	attachments: Attachment[],
 	content: string,
-	exclusive: boolean
+	exclusive: boolean,
+	{ rank = () => 0, on_change }: NormalizeOptions = {}
 ): Attachment[] {
 	const length = get_char_length(content);
-	const result: Attachment[] = [];
-	let last_end = -1;
+	const clamped: Attachment[] = [];
 	for (const a of attachments) {
 		const start_offset = Math.max(0, Math.min(a.start_offset, length));
 		const end_offset = Math.max(0, Math.min(a.end_offset, length));
-		if (end_offset <= start_offset) continue;
-		if (exclusive && start_offset < last_end) continue;
-		result.push({ ...a, start_offset, end_offset });
-		last_end = Math.max(last_end, end_offset);
+		if (end_offset <= start_offset) {
+			on_change?.(a, null);
+			continue;
+		}
+		const next = { ...a, start_offset, end_offset };
+		if (start_offset !== a.start_offset || end_offset !== a.end_offset) on_change?.(a, next);
+		clamped.push(next);
 	}
-	return result;
+	if (!exclusive) return clamped;
+
+	const ordered = [...clamped].sort(
+		(a, b) => rank(b) - rank(a) || a.start_offset - b.start_offset || a.end_offset - b.end_offset
+	);
+	const kept: Attachment[] = [];
+	for (const a of ordered) {
+		const [best] = free_segments(a.start_offset, a.end_offset, kept);
+		if (!best) {
+			on_change?.(a, null);
+			continue;
+		}
+		const next = { ...a, start_offset: best[0], end_offset: best[1] };
+		if (best[0] !== a.start_offset || best[1] !== a.end_offset) on_change?.(a, next);
+		kept.push(next);
+	}
+	return kept.sort((a, b) => a.start_offset - b.start_offset);
 }
 
-function reconcile_text_value(value: Text, am_marks: AutomergeMark[]): Text {
+function reconcile_text_value(
+	value: Text,
+	am_marks: AutomergeMark[],
+	rank: (attachment: Attachment) => number
+): Text {
 	const content = value.content;
 	const marks = normalize_attachments(
 		merge_attachments(marks_to_attachments(MARK_PREFIX, am_marks, content), value.marks),
 		content,
-		true
+		true,
+		{ rank }
 	);
 	const annotations = normalize_attachments(
 		merge_attachments(
@@ -322,6 +386,10 @@ export function reconcile_remote_nodes(
 	});
 	const result: Record<string, DocumentNode> = {};
 	let changed = owner.size !== Object.keys(current).length;
+	const rank = rank_by_payload((id) => {
+		const index = owner.get(id);
+		return index === undefined ? undefined : sources[index].nodes[id];
+	});
 	for (const [id, index] of owner) {
 		const doc = sources[index];
 		const node = doc.nodes[id];
@@ -330,7 +398,7 @@ export function reconcile_remote_nodes(
 			for (const [prop, value] of Object.entries(node)) {
 				if (!is_text_value(value)) continue;
 				const am_marks = marks_fn(doc, ['nodes', id, prop, 'content']);
-				const reconciled = reconcile_text_value(value, am_marks);
+				const reconciled = reconcile_text_value(value, am_marks, rank);
 				if (node_payload_equal(reconciled, value)) continue;
 				if (overlaid === node) overlaid = { ...node };
 				overlaid[prop] = reconciled;
