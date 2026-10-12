@@ -266,6 +266,25 @@ describe('normalize_attachments', () => {
 	});
 });
 
+describe('rank_by_payload', () => {
+	it('ranks by the declared data fields only', () => {
+		const nodes: Record<string, any> = {
+			link: { id: 'link', type: 'link', href: '/x' },
+			empty_link: { id: 'empty_link', type: 'link', href: '' },
+			tinted: { id: 'tinted', type: 'highlight', tone: 'yellow' }
+		};
+		const rank = rank_by_payload((id) => nodes[id]);
+		const at = (node_id: string) => rank({ node_id, start_offset: 0, end_offset: 1 });
+		expect([at('link'), at('empty_link'), at('tinted')]).toEqual([1, 0, 0]);
+		expect(
+			rank_by_payload(
+				(id) => nodes[id],
+				['tone']
+			)({ node_id: 'tinted', start_offset: 0, end_offset: 1 })
+		).toBe(1);
+	});
+});
+
 describe('selection cursors', () => {
 	it('anchors node selections to node ids', () => {
 		const { session, remote } = create_bound_session();

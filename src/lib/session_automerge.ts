@@ -265,15 +265,17 @@ export type NormalizeOptions = {
 };
 
 /**
- * Rank attachments whose payload node carries data (e.g. a link's href)
- * above plain formatting (e.g. strong), so formatting never costs a link.
+ * Rank attachments whose payload node carries data in one of `fields`
+ * (by default a link's `href`) above plain formatting, so formatting never
+ * costs a link.
  */
 export function rank_by_payload(
-	get_node: (id: string) => DocumentNode | undefined
+	get_node: (id: string) => DocumentNode | undefined,
+	fields: readonly string[] = ['href']
 ): (attachment: Attachment) => number {
 	return (attachment) => {
 		const node = get_node(attachment.node_id);
-		return node && Object.keys(node).some((key) => key !== 'id' && key !== 'type') ? 1 : 0;
+		return node && fields.some((field) => node[field] != null && node[field] !== '') ? 1 : 0;
 	};
 }
 
