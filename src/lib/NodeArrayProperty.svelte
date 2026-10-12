@@ -12,6 +12,7 @@
 		Attachment,
 		Mark,
 		NodeArrayRenderContext,
+		DocumentNode,
 		SveditRenderContext
 	} from './types.js';
 
@@ -124,9 +125,28 @@
 			serialize_path(svedit.session.selection.path) === path_str
 	);
 
+	// Outside editing, nodes the app calls blank render nothing.
+	function is_hidden(node: DocumentNode | undefined): boolean {
+		return (
+			!svedit.editable &&
+			!!node &&
+			!!svedit.session.config.is_blank_node?.(node, (id: NodeId) => svedit.session.get(id))
+		);
+	}
+
+	let shown_indices = $derived(
+		node_ids.flatMap((id, index) => (is_hidden(svedit.session.get(id)) ? [] : [index]))
+	);
+
 	setContext<NodeArrayRenderContext>('node_array_meta', {
 		get length() {
 			return node_ids.length;
+		},
+		get first_index() {
+			return shown_indices[0] ?? -1;
+		},
+		get last_index() {
+			return shown_indices.at(-1) ?? -1;
 		},
 		// Lets Node self-serve the marks and annotations covering a child, so
 		// node wrappers can carry range classes without every node component
@@ -170,8 +190,8 @@
 			{@const annotations = get_annotation_contexts(index)}
 			<NodeGap array_path={path} offset={index} count={node_ids.length} />
 			{@const Component = svedit.session.config.node_components[node?.type]}
-			{#if !node}
-				<!-- A dangling reference (e.g. mid-merge of remote changes) renders nothing -->
+			{#if !node || is_hidden(node)}
+				<!-- Dangling references (e.g. mid-merge of remote changes) and blank nodes render nothing -->
 			{:else if Component}
 				<Component path={[...path, index]} {mark} {annotations} />
 			{:else}

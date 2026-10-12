@@ -17,8 +17,8 @@
 
 	const node_array_meta = getContext<NodeArrayRenderContext | undefined>('node_array_meta');
 	let child_index = $derived(node_array_meta ? (path.at(-1) as number) : -1);
-	let is_first = $derived(node_array_meta && child_index === 0);
-	let is_last = $derived(node_array_meta && child_index === node_array_meta.length - 1);
+	let is_first = $derived(node_array_meta && child_index === node_array_meta.first_index);
+	let is_last = $derived(node_array_meta && child_index === node_array_meta.last_index);
 
 	// Marks and annotations covering this node become classes automatically:
 	// `mark-<type>`/`anno-<type>`, plus `-start`/`-end` variants on the run's

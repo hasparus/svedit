@@ -26,6 +26,13 @@ export type SessionConfig = DynamicRecord & {
 	mark_html_exporters?: Record<string, import('./html_export.js').MarkHtmlExporter>;
 	view_classes?: boolean;
 	visibility_culling?: boolean;
+	/**
+	 * Nodes rendered as nothing outside editing, e.g. an empty paragraph or a
+	 * figure without an image. `get` resolves referenced nodes.
+	 */
+	is_blank_node?: (node: DocumentNode, get: (id: NodeId) => DocumentNode | undefined) => boolean;
+	/** Values kept out of bound Automerge docs (see `LocalOnlyFn`) */
+	is_local_only_value?: (value: unknown) => boolean;
 };
 export type CommandRegistry = DynamicRecord;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -611,6 +618,9 @@ export type NodeArrayAttachmentContext = {
 /** Internal context shared by a node array and its rendered child nodes. */
 export type NodeArrayRenderContext = {
 	length: number;
+	/** Index of the first and last rendered child (-1 if none), for `first` / `last` */
+	first_index: number;
+	last_index: number;
 	mark_for: (node_index: number) => NodeArrayAttachmentContext | null;
 	annotations_for: (node_index: number) => NodeArrayAttachmentContext[];
 };
