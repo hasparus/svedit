@@ -80,14 +80,15 @@ const fake_fns: AutomergeTextFns = {
 function create_handle(initial: AutomergeDoc) {
 	let doc: FakeDoc = { ...structuredClone(initial), _marks: {}, _splices: [] };
 	const listeners = new Set<(payload: AutomergeChangePayload) => void>();
+	const commit = (fn: (d: AutomergeDoc) => void, patches: AutomergeChangePayload['patches']) => {
+		const before = doc;
+		const draft = structuredClone(doc);
+		fn(draft);
+		doc = draft;
+		for (const listener of listeners) listener({ patches, patchInfo: { before, after: doc } });
+	};
 	const handle: AutomergeHandle = {
-		change(fn) {
-			const before = doc;
-			const draft = structuredClone(doc);
-			fn(draft);
-			doc = draft;
-			for (const listener of listeners) listener({ patchInfo: { before, after: doc } });
-		},
+		change: (fn) => commit(fn, []),
 		doc: () => doc,
 		on: (_event, listener) => listeners.add(listener),
 		off: (_event, listener) => listeners.delete(listener)
@@ -96,6 +97,15 @@ function create_handle(initial: AutomergeDoc) {
 		handle,
 		get doc() {
 			return doc;
+		},
+		/** Replace the whole nodes map, as a server-side reset does. */
+		reset(nodes: AutomergeDoc['nodes']) {
+			commit(
+				(d) => {
+					d.nodes = structuredClone(nodes);
+				},
+				[{ action: 'put', path: ['nodes'] }]
+			);
 		}
 	};
 }
@@ -108,7 +118,7 @@ function create_bound_session(fns: AutomergeTextFns = fake_fns) {
 	(session.schema.story.properties.title as any).mark_types = ['strong'];
 	(session.schema.story.properties.title as any).annotation_types = ['comment'];
 	const remote = create_handle(structuredClone(session.doc));
-	session.attach_automerge_handle(remote.handle, fns);
+	session.attach_automerge_handles([{ root_id: 'page_1', handle: remote.handle }], fns);
 	return { session, remote };
 }
 
@@ -193,7 +203,7 @@ describe('automerge binding', () => {
 
 	it('stops mirroring after detach', () => {
 		const { session, remote } = create_bound_session();
-		session.detach_automerge_handle();
+		session.detach_automerge_handles();
 		session.selection = { type: 'text', path: title_path, anchor_offset: 0, focus_offset: 0 };
 		session.apply(session.tr.insert_text('A '));
 		expect(remote.doc.nodes.story_1.title.content).toBe('First story');
@@ -306,5 +316,99 @@ describe('mirroring created text', () => {
 		expect(session.get(['paragraph_1', 'content']).marks).toEqual([
 			{ node_id: 'strong_1', start_offset: 8, end_offset: 12 }
 		]);
+	});
+});
+
+describe('multiple bound docs', () => {
+	function split_session() {
+		const session = create_test_session();
+		const list_ids = ['list_1', 'list_item_1', 'list_item_2'];
+		const pick = (keep: (id: string) => boolean) => ({
+			document_id: 'page_1',
+			nodes: Object.fromEntries(Object.entries(session.doc.nodes).filter(([id]) => keep(id)))
+		});
+		const body = create_handle(pick((id) => !list_ids.includes(id)));
+		const list = create_handle(pick((id) => list_ids.includes(id)));
+		session.attach_automerge_handles(
+			[
+				{ root_id: 'page_1', handle: body.handle },
+				{ root_id: 'list_1', handle: list.handle }
+			],
+			fake_fns
+		);
+		return { session, body, list };
+	}
+
+	it('mirrors each op into the doc owning its node', () => {
+		const { session, body, list } = split_session();
+		session.selection = {
+			type: 'text',
+			path: ['list_1', 'list_items', 0, 'content'],
+			anchor_offset: 0,
+			focus_offset: 0
+		};
+		session.apply(session.tr.insert_text('The '));
+		expect(list.doc.nodes.list_item_1.content.content).toBe('The first list item');
+		expect(body.doc.nodes.list_item_1).toBeUndefined();
+		expect(body.doc._splices).toHaveLength(0);
+	});
+
+	it('merges remote changes from every doc', () => {
+		const { session, list } = split_session();
+		list.handle.change((d) =>
+			fake_fns.splice!(d, ['nodes', 'list_item_2', 'content', 'content'], 0, 0, 'A ')
+		);
+		expect(session.get(['list_item_2', 'content']).content).toBe('A second list item');
+		expect(session.get(['story_1', 'title']).content).toBe('First story');
+	});
+
+	it('takes in docs that are ahead on attach', () => {
+		const session = create_test_session();
+		const ahead = structuredClone(session.doc);
+		ahead.nodes.story_1.title.content = 'Updated story';
+		session.attach_automerge_handles([{ root_id: 'page_1', handle: create_handle(ahead).handle }]);
+		expect(session.get(['story_1', 'title']).content).toBe('Updated story');
+	});
+});
+
+describe('resets', () => {
+	it('drops undo history when a doc is reset', () => {
+		const { session, remote } = create_bound_session();
+		session.selection = { type: 'text', path: title_path, anchor_offset: 0, focus_offset: 0 };
+		session.apply(session.tr.insert_text('Draft '));
+		const saved = structuredClone(remote.doc.nodes);
+		saved.story_1.title.content = 'First story';
+		remote.reset(saved);
+		expect(session.get([...title_path, 'content'])).toBe('First story');
+		expect(session.can_undo).toBe(false);
+	});
+});
+
+describe('local-only values', () => {
+	function local_session() {
+		const bound = create_bound_session();
+		bound.session.config = {
+			...bound.session.config,
+			is_local_only_value: (value: unknown) =>
+				typeof value === 'string' && value.startsWith('blob:')
+		};
+		return bound;
+	}
+
+	it('keeps local-only values out of the doc and across unrelated remote changes', () => {
+		const { session, remote } = local_session();
+		session.apply(session.tr.set(['story_1', 'image'], 'blob:preview'));
+		expect(remote.doc.nodes.story_1.image).not.toBe('blob:preview');
+		remote.handle.change((d) => fake_fns.splice!(d, title_content_path, 0, 0, 'My '));
+		expect(session.get(['story_1', 'image'])).toBe('blob:preview');
+	});
+
+	it('lets a remote change of the same property win', () => {
+		const { session, remote } = local_session();
+		session.apply(session.tr.set(['story_1', 'image'], 'blob:preview'));
+		remote.handle.change((d) => {
+			d.nodes!.story_1.image = 'uploaded.webp';
+		});
+		expect(session.get(['story_1', 'image'])).toBe('uploaded.webp');
 	});
 });

@@ -37,7 +37,12 @@ import type {
 	SveditContext
 } from './types.js';
 import type { Keymap } from './KeyMapper.svelte.js';
-import { mirror_ops_to_doc, reconcile_remote_nodes } from './session_automerge.js';
+import {
+	is_nodes_reset,
+	mirror_ops_to_doc,
+	partition_ops,
+	reconcile_remote_nodes
+} from './session_automerge.js';
 import type {
 	AutomergeChangePayload,
 	AutomergeHandle,
@@ -46,6 +51,12 @@ import type {
 import { encode_selection, decode_selection } from './presence_cursors.js';
 
 const BATCH_WINDOW_MS = 1000; // 1 second
+
+type AutomergeBinding = {
+	root_id: string;
+	handle: AutomergeHandle;
+	listener: (payload: AutomergeChangePayload) => void;
+};
 
 type HistoryEntry = {
 	ops: Transaction['ops'];
@@ -72,10 +83,9 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 	commands: CommandRegistry = $state.raw({});
 	keymap: Keymap = $state.raw({});
 
-	// Automerge binding (see attach_automerge_handle)
-	#automerge_handle: AutomergeHandle | null = null;
+	// Automerge bindings (see attach_automerge_handles)
+	#bindings: AutomergeBinding[] = [];
 	#automerge_fns: AutomergeTextFns = {};
-	#automerge_change_listener: ((payload: AutomergeChangePayload) => void) | null = null;
 	#mirroring_locally = false;
 
 	// Reactive helpers for UI state
@@ -676,66 +686,118 @@ export default class Session<S extends DocumentSchema = DocumentSchema> {
 	}
 
 	/**
-	 * Bind this session to an Automerge document handle. Local transactions,
-	 * undo and redo are mirrored into the doc; remote changes are reconciled
+	 * Bind this session to Automerge document handles. Local transactions,
+	 * undo and redo are mirrored into the docs; remote changes are reconciled
 	 * into `doc`, keeping unchanged nodes (and the caret in them) intact.
 	 *
-	 * The Automerge doc holds the same `nodes` map as `doc`. Pass Automerge's
-	 * `splice`, `mark`, `unmark` and `marks` to merge concurrent text edits
-	 * per character, and `getCursor` / `getCursorPosition` to keep the local
-	 * caret on its character across remote edits.
+	 * The first binding holds the document body. Each further one holds the
+	 * subgraph reachable from its `root_id` (e.g. a navigation shared by
+	 * several documents). Ops go to the doc owning their node; `doc` is the
+	 * merge of all docs, later ones winning. Each doc holds a `nodes` map in
+	 * the session's format; seeding it is the caller's job. The docs may be
+	 * ahead of the data the session was built from, so they are taken in
+	 * right away when they already hold the document root.
+	 *
+	 * Pass Automerge's `splice`, `mark`, `unmark` and `marks` to merge
+	 * concurrent text edits per character, and `getCursor` /
+	 * `getCursorPosition` to keep the local caret on its character across
+	 * remote edits.
 	 */
-	attach_automerge_handle(handle: AutomergeHandle, fns: AutomergeTextFns = {}): void {
-		this.detach_automerge_handle();
-		this.#automerge_handle = handle;
+	attach_automerge_handles(
+		bindings: Array<{ root_id: string; handle: AutomergeHandle }>,
+		fns: AutomergeTextFns = {}
+	): void {
+		this.detach_automerge_handles();
 		this.#automerge_fns = fns;
-		const listener = (payload: AutomergeChangePayload) => this.#on_automerge_change(payload);
-		this.#automerge_change_listener = listener;
-		handle.on('change', listener);
+		this.#bindings = bindings.map(({ root_id, handle }) => {
+			const listener = (payload: AutomergeChangePayload) =>
+				this.#on_automerge_change(handle, payload);
+			handle.on('change', listener);
+			return { root_id, handle, listener };
+		});
+		if (this.#bindings[0]?.handle.doc()?.nodes?.[this.document_id]) {
+			this.#on_automerge_change(this.#bindings[0].handle, {});
+		}
 	}
 
-	detach_automerge_handle(): void {
-		if (this.#automerge_handle && this.#automerge_change_listener) {
-			this.#automerge_handle.off('change', this.#automerge_change_listener);
-		}
-		this.#automerge_handle = null;
+	detach_automerge_handles(): void {
+		for (const { handle, listener } of this.#bindings) handle.off('change', listener);
+		this.#bindings = [];
 		this.#automerge_fns = {};
-		this.#automerge_change_listener = null;
+	}
+
+	/** The index of the binding whose doc owns a node (0 is the body). */
+	#owner_of(): (node_id: NodeId) => number {
+		const secondary = this.#bindings.slice(1).map(({ root_id, handle }) => ({
+			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- Non-reactive local lookup set.
+			reachable: new Set(traverse_ids(root_id, this.schema, this.doc.nodes)),
+			nodes: handle.doc()?.nodes ?? {}
+		}));
+		return (node_id) => {
+			let index = secondary.findIndex((b) => b.reachable.has(node_id));
+			if (index === -1) index = secondary.findIndex((b) => node_id in b.nodes);
+			return index + 1;
+		};
 	}
 
 	#mirror_if_bound(ops: Transaction['ops']): void {
-		const handle = this.#automerge_handle;
-		if (!handle || ops.length === 0) return;
+		if (this.#bindings.length === 0 || ops.length === 0) return;
 		const { splice, mark, unmark } = this.#automerge_fns;
-		// The handle emits `change` synchronously for our own write; the flag
+		const parts =
+			this.#bindings.length === 1
+				? [ops]
+				: partition_ops(ops, this.#bindings.length, this.#owner_of());
+		// Handles emit `change` synchronously for our own writes; the flag
 		// keeps that echo from being reconciled back into the session.
 		this.#mirroring_locally = true;
 		try {
-			handle.change((d) =>
-				mirror_ops_to_doc(d, ops, {
-					splice: splice ?? null,
-					mark: mark ?? null,
-					unmark: unmark ?? null
-				})
-			);
+			this.#bindings.forEach(({ handle }, index) => {
+				const part = parts[index];
+				if (part.length === 0) return;
+				handle.change((d) =>
+					mirror_ops_to_doc(d, part, {
+						splice: splice ?? null,
+						mark: mark ?? null,
+						unmark: unmark ?? null,
+						local_only: this.config.is_local_only_value ?? null
+					})
+				);
+			});
 		} finally {
 			this.#mirroring_locally = false;
 		}
 	}
 
-	#on_automerge_change(payload: AutomergeChangePayload): void {
+	#on_automerge_change(changed_handle: AutomergeHandle, payload: AutomergeChangePayload): void {
 		if (this.#mirroring_locally) return;
-		const next = this.#automerge_handle?.doc();
-		if (!next?.nodes) return;
+		// A doc whose whole nodes map was replaced (e.g. reset to a saved
+		// version) must not be undone past: that would bring back the content
+		// the reset dropped.
+		if (is_nodes_reset(payload)) {
+			this.history = [];
+			this.history_index = -1;
+			this.last_batch_started = undefined;
+		}
+		const sources = this.#bindings.map(({ handle }) => handle.doc());
+		if (sources.some((d) => !d?.nodes)) return;
 		let reconciled: ReturnType<typeof reconcile_remote_nodes>;
 		try {
 			reconciled = reconcile_remote_nodes(
 				this.doc?.nodes ?? {},
-				next,
-				this.#automerge_fns.marks ?? null
+				sources,
+				this.#automerge_fns.marks ?? null,
+				{
+					local_only: this.config.is_local_only_value ?? null,
+					before: this.#bindings.map(({ handle }) =>
+						handle === changed_handle ? payload?.patchInfo?.before : undefined
+					)
+				}
 			);
 		} catch {
-			reconciled = { nodes: structuredClone(next.nodes), changed: true };
+			reconciled = {
+				nodes: structuredClone(Object.assign({}, ...sources.map((d) => d.nodes))),
+				changed: true
+			};
 		}
 		if (!reconciled.changed) return;
 		const selection_before = this.selection;

@@ -103,7 +103,10 @@ export { escape_html, safe_html_href } from './html_utils.js';
 // Automerge binding and selection cursors
 export {
 	apply_text_splice,
+	is_nodes_reset,
 	mirror_ops_to_doc,
+	normalize_attachments,
+	partition_ops,
 	reconcile_remote_nodes,
 	MARK_PREFIX,
 	ANNOTATION_PREFIX
@@ -119,7 +122,8 @@ export type {
 	UnmarkFn,
 	MarksFn,
 	GetCursorFn,
-	GetCursorPositionFn
+	GetCursorPositionFn,
+	LocalOnlyFn
 } from './session_automerge.js';
 export { encode_selection, decode_selection } from './presence_cursors.js';
 export type { CursorApi, WireSelection } from './presence_cursors.js';

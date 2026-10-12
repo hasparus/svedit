@@ -65,10 +65,31 @@ export type AutomergeDoc = {
 	[key: string]: unknown;
 };
 
-/** The `change` event payload. `patchInfo` carries the docs before and after the change. */
+/**
+ * The `change` event payload. `patches` lists what changed, `patchInfo`
+ * carries the docs before and after the change.
+ */
 export type AutomergeChangePayload = {
+	patches?: Array<{ action: string; path: Array<string | number> }>;
 	patchInfo?: { before?: AutomergeDoc; after?: AutomergeDoc };
 };
+
+/**
+ * Whether a change replaced a doc's whole `nodes` map (a reset done outside
+ * the editor), as opposed to node-level edits.
+ */
+export function is_nodes_reset(payload: AutomergeChangePayload | undefined): boolean {
+	return !!payload?.patches?.some(
+		(p) => p.action === 'put' && p.path.length === 1 && p.path[0] === 'nodes'
+	);
+}
+
+/**
+ * Property values that stay in this session, e.g. a `blob:` preview before
+ * its upload lands. They never reach a bound doc, and remote changes do not
+ * overwrite them unless they set that same property.
+ */
+export type LocalOnlyFn = (value: unknown) => boolean;
 
 /** The slice of an Automerge `DocHandle` Session uses. */
 export type AutomergeHandle = {
@@ -276,27 +297,39 @@ function reconcile_text_value(value: Text, am_marks: AutomergeMark[]): Text {
 }
 
 /**
- * Reconcile a remote Automerge doc into the next local node map, in one pass:
- *   1. rebuild text marks and annotations from Automerge marks;
- *   2. reuse the existing node object when nothing changed, so Svedit skips
+ * Reconcile remote Automerge docs into the next local node map. `next` is one
+ * doc or several (a body plus docs it shares nodes with); a node present in
+ * more than one comes from the last. In one pass it:
+ *   1. rebuilds text marks and annotations from Automerge marks;
+ *   2. keeps local-only values (`local_only`) unless the remote change set
+ *      that same property (`before[i]` is source i's doc before the change,
+ *      when known), so a peer's newer value beats a stale local preview;
+ *   3. reuses the existing node object when nothing changed, so Svedit skips
  *      re-rendering it and the local caret in an untouched node survives;
- *   3. report whether anything changed, so the caller can skip the
+ *   4. reports whether anything changed, so the caller can skip the
  *      reassignment on a no-op echo.
  */
 export function reconcile_remote_nodes(
 	current: Record<string, DocumentNode>,
-	next: AutomergeDoc,
-	marks_fn: MarksFn | null
+	next: AutomergeDoc | AutomergeDoc[],
+	marks_fn: MarksFn | null,
+	opts: { local_only?: LocalOnlyFn | null; before?: Array<AutomergeDoc | undefined> } = {}
 ): { nodes: Record<string, DocumentNode>; changed: boolean } {
-	const source = next.nodes ?? {};
+	const sources = Array.isArray(next) ? next : [next];
+	const owner = new Map<string, number>();
+	sources.forEach((doc, index) => {
+		for (const id of Object.keys(doc.nodes ?? {})) owner.set(id, index);
+	});
 	const result: Record<string, DocumentNode> = {};
-	let changed = Object.keys(source).length !== Object.keys(current).length;
-	for (const [id, node] of Object.entries(source)) {
+	let changed = owner.size !== Object.keys(current).length;
+	for (const [id, index] of owner) {
+		const doc = sources[index];
+		const node = doc.nodes[id];
 		let overlaid: DocumentNode = node;
 		if (marks_fn) {
 			for (const [prop, value] of Object.entries(node)) {
 				if (!is_text_value(value)) continue;
-				const am_marks = marks_fn(next, ['nodes', id, prop, 'content']);
+				const am_marks = marks_fn(doc, ['nodes', id, prop, 'content']);
 				const reconciled = reconcile_text_value(value, am_marks);
 				if (node_payload_equal(reconciled, value)) continue;
 				if (overlaid === node) overlaid = { ...node };
@@ -304,6 +337,15 @@ export function reconcile_remote_nodes(
 			}
 		}
 		const cur = current[id];
+		if (cur && opts.local_only) {
+			const before = opts.before?.[index]?.nodes?.[id];
+			for (const [prop, value] of Object.entries(cur)) {
+				if (!opts.local_only(value)) continue;
+				if (before && !node_payload_equal(before[prop], node[prop])) continue;
+				if (overlaid === node) overlaid = { ...node };
+				overlaid[prop] = value;
+			}
+		}
 		if (cur && node_payload_equal(cur, overlaid)) {
 			result[id] = cur;
 		} else {
@@ -312,6 +354,29 @@ export function reconcile_remote_nodes(
 		}
 	}
 	return { nodes: result, changed };
+}
+
+/**
+ * Split ops between bound docs by the doc owning each node
+ * (`owner_of(node_id)` is a doc index). Deletes go to every doc.
+ */
+export function partition_ops(
+	ops: DocumentOperation[],
+	count: number,
+	owner_of: (node_id: string) => number
+): DocumentOperation[][] {
+	const parts: DocumentOperation[][] = Array.from({ length: count }, () => []);
+	for (const op of ops) {
+		const [type, arg] = op;
+		if (type === 'delete') {
+			for (const part of parts) part.push(op);
+		} else if (type === 'set') {
+			parts[owner_of(arg[0])].push(op);
+		} else if (type === 'create') {
+			parts[owner_of(arg.id)].push(op);
+		}
+	}
+	return parts;
 }
 
 function mirror_attachments(
@@ -371,20 +436,27 @@ function mark_text_properties(d: AutomergeDoc, node: DocumentNode, mark_fn: Mark
  *     so concurrent edits merge.
  *   ['create', node] adds the node, with Automerge marks for its text.
  *   ['delete', node_id] removes the node.
- * Unknown op types are ignored.
+ * Unknown op types are ignored. Local-only values are withheld: a `set` of
+ * one is skipped, a created node carries `''` in its place.
  */
 export function mirror_ops_to_doc(
 	d: AutomergeDoc,
 	ops: DocumentOperation[],
-	fns: { splice: SpliceFn | null; mark: MarkFn | null; unmark: UnmarkFn | null }
+	fns: {
+		splice: SpliceFn | null;
+		mark: MarkFn | null;
+		unmark: UnmarkFn | null;
+		local_only?: LocalOnlyFn | null;
+	}
 ): void {
 	if (!d.nodes) d.nodes = {};
 	const nodes = d.nodes;
-	const { splice: splice_fn, mark: mark_fn, unmark: unmark_fn } = fns;
+	const { splice: splice_fn, mark: mark_fn, unmark: unmark_fn, local_only } = fns;
 	for (const [type, ...args] of ops) {
 		if (type === 'set') {
 			const [node_id, property] = args[0] as [string, string];
 			const new_value = args[1];
+			if (local_only?.(new_value)) continue;
 			if (new_value === undefined) {
 				if (nodes[node_id]) delete nodes[node_id][property];
 				continue;
@@ -430,6 +502,11 @@ export function mirror_ops_to_doc(
 			}
 		} else if (type === 'create') {
 			const node = structuredClone(args[0]) as DocumentNode;
+			if (local_only) {
+				for (const [prop, value] of Object.entries(node)) {
+					if (local_only(value)) node[prop] = '';
+				}
+			}
 			nodes[node.id] = node;
 			mark_text_properties(d, node, mark_fn);
 		} else if (type === 'delete') {
