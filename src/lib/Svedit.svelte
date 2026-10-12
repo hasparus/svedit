@@ -1036,7 +1036,6 @@ ${fallback_html}`;
 		}
 	}
 
-	// Handle focus - push session's keymap onto stack
 	// True between a mousedown on the canvas and the focus it causes. Only
 	// pointer-driven focus yields to the selection the browser is about to
 	// make; keyboard, programmatic and dialog-return focus keep the model
@@ -1044,6 +1043,7 @@ ${fallback_html}`;
 	// mousedown is a compatibility event fired after pointerup.
 	let pointer_focusing = false;
 
+	// Handle focus - push session's keymap onto stack
 	function handle_canvas_focus() {
 		// Use flushSync so highlight spans are removed from the DOM
 		// immediately, before the browser processes the click's selection.
