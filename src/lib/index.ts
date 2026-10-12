@@ -104,7 +104,9 @@ export { escape_html, safe_html_href } from './html_utils.js';
 export {
 	apply_text_splice,
 	is_nodes_reset,
+	is_text_value,
 	mirror_ops_to_doc,
+	node_payload_equal,
 	normalize_attachments,
 	partition_ops,
 	reconcile_remote_nodes,
