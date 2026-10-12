@@ -53,3 +53,27 @@ describe('read-only editing', () => {
 		expect(event.defaultPrevented).toBe(true);
 	});
 });
+
+describe('canvas focus', () => {
+	async function render_with_session() {
+		const session = create_test_session();
+		const { container } = await render(Svedit, { session, path: ['page_1'], editable: true });
+		await tick();
+		const canvas = container.querySelector('.svedit-canvas') as HTMLElement;
+		session.selection = { type: 'property', path: ['page_1', 'body', 0, 'image'] };
+		return { session, canvas };
+	}
+
+	it('keeps the model selection on programmatic or keyboard focus', async () => {
+		const { session, canvas } = await render_with_session();
+		canvas.focus();
+		expect(session.selection).toMatchObject({ type: 'property' });
+	});
+
+	it('yields to the selection a click is about to make', async () => {
+		const { session, canvas } = await render_with_session();
+		canvas.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+		canvas.focus();
+		expect(session.selection).toBeNull();
+	});
+});

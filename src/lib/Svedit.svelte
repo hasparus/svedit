@@ -1037,12 +1037,24 @@ ${fallback_html}`;
 	}
 
 	// Handle focus - push session's keymap onto stack
+	// True between a mousedown on the canvas and the focus it causes. Only
+	// pointer-driven focus yields to the selection the browser is about to
+	// make; keyboard, programmatic and dialog-return focus keep the model
+	// selection. Mouse (not pointer) events, because a tap's focusing
+	// mousedown is a compatibility event fired after pointerup.
+	let pointer_focusing = false;
+
 	function handle_canvas_focus() {
 		// Use flushSync so highlight spans are removed from the DOM
 		// immediately, before the browser processes the click's selection.
 		flushSync(() => {
+			// A stale model selection (e.g. a selected image from before focus
+			// moved to a control outside the canvas) would otherwise be rendered
+			// over the caret the click or tap is placing.
+			if (pointer_focusing) session.selection = null;
 			canvas_focused = true;
 		});
+		pointer_focusing = false;
 		key_mapper?.push_scope(session.keymap);
 	}
 
@@ -1776,7 +1788,13 @@ ${fallback_html}`;
   TODO: We must get rid of the global handlers here, so Svedit doesn't conflict
   with any app-specific event handling.
 -->
-<svelte:document {onselectionchange} {oncut} {oncopy} {onpaste} />
+<svelte:document
+	{onselectionchange}
+	{oncut}
+	{oncopy}
+	{onpaste}
+	onmouseup={() => (pointer_focusing = false)}
+/>
 
 <!-- TODO: move oncut/copy/paste handlers inside .svedit -->
 <div class="svedit" class:editable>
@@ -1806,6 +1824,7 @@ ${fallback_html}`;
 		{ondrop}
 		{oncompositionstart}
 		{oncompositionend}
+		onmousedown={() => (pointer_focusing = true)}
 		onfocus={handle_canvas_focus}
 		onblur={handle_canvas_blur}
 		inputmode={session.selection?.type === 'text' ? 'text' : 'none'}
