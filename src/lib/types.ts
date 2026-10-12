@@ -509,6 +509,11 @@ export type SveditProps<S extends DocumentSchema = DocumentSchema> = {
 	session: Session<S>;
 	/** Determines wether the document should be editable or read-only. */
 	editable?: boolean;
+	/**
+	 * While `editable`, take no input: the canvas renders as in edit mode, but
+	 * typing, pasting and dropping go nowhere (e.g. until the app's sync is up).
+	 */
+	read_only?: boolean;
 	/** The path to the root element (e.g. ['page_1']) */
 	path: DocumentPath;
 	/** The `class` attribute on the canvas element */
@@ -533,6 +538,8 @@ export type SveditProps<S extends DocumentSchema = DocumentSchema> = {
 export type SveditContext<S extends DocumentSchema = DocumentSchema> = {
 	session: Session<S>;
 	editable: boolean;
+	/** `editable` and not `read_only` */
+	accepts_input: boolean;
 	is_composing: boolean;
 	canvas_el: HTMLElement | undefined;
 	canvas_focused: boolean;

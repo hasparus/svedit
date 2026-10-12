@@ -46,6 +46,7 @@
 	let {
 		session,
 		editable = $bindable(false),
+		read_only = false,
 		path,
 		class: css_class,
 		autocapitalize = 'on',
@@ -63,6 +64,9 @@
 	let RootComponent = $derived(session.config.node_components[root_node.type]);
 
 	let is_composing = $state(false);
+	// Editing (`editable`) but taking no input yet, e.g. until the app's sync
+	// is up: the canvas renders as in edit mode while typing goes nowhere.
+	let accepts_input = $derived(editable && !read_only);
 	let canvas_focused = $state(false);
 	let before_composition_selection: TextSelection | null = null;
 	// Selection restoration and selection revealing are separate concerns.
@@ -91,6 +95,9 @@
 		},
 		set editable(value) {
 			editable = value;
+		},
+		get accepts_input() {
+			return accepts_input;
 		},
 		get is_composing() {
 			return is_composing;
@@ -145,6 +152,10 @@
 	 */
 	async function onbeforeinput(event: InputEvent) {
 		// console.log(`onbeforeinput: ${event.inputType}, data: "${event.data}", isComposing: ${event.isComposing}`, event);
+		if (!accepts_input) {
+			event.preventDefault();
+			return;
+		}
 
 		if (event.inputType === 'historyUndo' && is_composing) {
 			// Let the historyundo event pass through (when triggered from within oncompositionend)
@@ -321,7 +332,7 @@
 
 	// Map DOM selection to internal model
 	function onselectionchange() {
-		if (!editable) return;
+		if (!accepts_input) return;
 		if (!canvas_focused) return;
 		if (is_composing) return;
 		const dom_selection = window.getSelection();
@@ -545,7 +556,7 @@ ${fallback_html}`;
 	}
 
 	function oncut(event: ClipboardEvent) {
-		if (!editable) return;
+		if (!accepts_input) return;
 		oncopy(event, true);
 	}
 
@@ -769,7 +780,7 @@ ${fallback_html}`;
 	}
 
 	function ondragover(event: DragEvent) {
-		if (!editable || !get_media_paste_handler()) return;
+		if (!accepts_input || !get_media_paste_handler()) return;
 		if (!event.dataTransfer?.types.includes('Files')) return;
 		event.preventDefault();
 		event.dataTransfer.dropEffect = 'copy';
@@ -803,7 +814,7 @@ ${fallback_html}`;
 	 * replace it), else the current node selection.
 	 */
 	async function ondrop(event: DragEvent) {
-		if (!editable) return;
+		if (!accepts_input) return;
 		const handle_media_paste = get_media_paste_handler();
 		if (!handle_media_paste) return;
 		const media = collect_media(Array.from(event.dataTransfer?.files ?? []));
@@ -820,7 +831,7 @@ ${fallback_html}`;
 
 	async function onpaste(event: ClipboardEvent) {
 		// Only handle paste events if editable and focus is within the canvas
-		if (!editable) return;
+		if (!accepts_input) return;
 		if (!canvas_el?.contains(document.activeElement)) return;
 		event.preventDefault();
 
@@ -1046,7 +1057,9 @@ ${fallback_html}`;
 		key_mapper?.pop_scope();
 	}
 
+	/** Focus the canvas, keeping the model selection. No-op while it takes no input. */
 	function focus_canvas() {
+		if (!accepts_input) return;
 		// Use flushSync so highlight spans are removed from the DOM
 		// immediately, before we focus and render_selection walks the
 		// text nodes.
@@ -1796,10 +1809,10 @@ ${fallback_html}`;
 		onfocus={handle_canvas_focus}
 		onblur={handle_canvas_blur}
 		inputmode={session.selection?.type === 'text' ? 'text' : 'none'}
-		contenteditable={editable ? 'true' : 'false'}
-		tabindex={editable ? canvas_tabindex : -1}
-		role={editable && canvas_tabindex === 0 ? 'textbox' : undefined}
-		aria-multiline={editable && canvas_tabindex === 0 ? true : undefined}
+		contenteditable={accepts_input ? 'true' : 'false'}
+		tabindex={accepts_input ? canvas_tabindex : -1}
+		role={accepts_input && canvas_tabindex === 0 ? 'textbox' : undefined}
+		aria-multiline={accepts_input && canvas_tabindex === 0 ? true : undefined}
 		aria-label={canvas_label}
 		{autocapitalize}
 		{spellcheck}

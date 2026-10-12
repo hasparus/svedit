@@ -36,3 +36,20 @@ describe('canvas keyboard access', () => {
 		expect(canvas.hasAttribute('role')).toBe(false);
 	});
 });
+
+describe('read-only editing', () => {
+	it('renders in edit mode but takes no input', async () => {
+		const canvas = await render_canvas({ editable: true, read_only: true, canvas_tabindex: 0 });
+		expect(canvas.getAttribute('contenteditable')).toBe('false');
+		expect(canvas.getAttribute('tabindex')).toBe('-1');
+		expect(canvas.closest('.svedit')!.classList.contains('editable')).toBe(true);
+		const event = new InputEvent('beforeinput', {
+			inputType: 'insertText',
+			data: 'x',
+			cancelable: true,
+			bubbles: true
+		});
+		canvas.dispatchEvent(event);
+		expect(event.defaultPrevented).toBe(true);
+	});
+});
