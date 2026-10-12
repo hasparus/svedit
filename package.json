@@ -36,6 +36,11 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"svelte": "./dist/index.js"
+		},
+		"./doc": {
+			"types": "./dist/doc.d.ts",
+			"svelte": "./dist/doc.js",
+			"default": "./dist/doc.js"
 		}
 	},
 	"peerDependencies": {
