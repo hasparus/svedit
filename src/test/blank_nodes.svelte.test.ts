@@ -27,3 +27,15 @@ describe('blank nodes', () => {
 		expect(list.classList.contains('last')).toBe(true);
 	});
 });
+
+describe('placeholders', () => {
+	it('shows text placeholders only while editing', async () => {
+		const button = '[data-path="page_1__body__0__buttons__0__content"]';
+		expect((await render_canvas(true)).querySelector(button)!.getAttribute('placeholder')).toBe(
+			'Call to Action'
+		);
+		expect((await render_canvas(false)).querySelector(button)!.hasAttribute('placeholder')).toBe(
+			false
+		);
+	});
+});

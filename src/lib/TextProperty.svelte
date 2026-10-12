@@ -136,7 +136,7 @@
 	class="text svedit-selectable {css_class}"
 	class:empty={is_empty}
 	class:focused={is_focused}
-	{placeholder}
+	placeholder={svedit.editable ? placeholder : undefined}
 	{...rest}
 >
 	{#each fragments as fragment, index (index)}
